@@ -5,8 +5,7 @@ from email.mime.text import MIMEText
 from playwright.sync_api import sync_playwright
 
 CSV_FILE = "jobs.csv"
-# Removed EXCLUDE terms entirely to prevent throwing away multi-job agency pages
-INCLUDE_KEYWORDS = ["director", "manager", "information", "pio", "chief", "lead", "officer", "communication"]
+INCLUDE_KEYWORDS = ["information", "communication", "director", "manager", "pio", "chief", "lead", "officer"]
 
 def send_email(subject, body):
     sender_email = os.environ.get("SENDER_EMAIL")
@@ -40,6 +39,23 @@ def read_csv_file(filepath):
             continue
     return []
 
+def extract_url(row):
+    """Aggressively hunts for a URL in the CSV row regardless of column names."""
+    # First, look for obvious column names
+    for key, value in row.items():
+        if key and value and isinstance(value, str):
+            k = key.strip().lower()
+            if 'url' in k or 'link' in k or 'web' in k:
+                return value.strip()
+    
+    # Fallback: Just look for any cell in the row that looks like a web address
+    for value in row.values():
+        if value and isinstance(value, str):
+            v = value.strip()
+            if v.startswith("http") or v.startswith("www") or ".gov" in v or ".com" in v or ".edu" in v:
+                return v
+    return ""
+
 def main():
     if not os.path.exists(CSV_FILE):
         print(f"{CSV_FILE} not found.")
@@ -51,27 +67,36 @@ def main():
         return
 
     results = []
-    print(f"Starting headless Chrome scan of {len(rows)} targets...")
+    scanned_count = 0
+    skipped_count = 0
+
+    print(f"Loaded {len(rows)} rows from CSV. Starting headless Chrome scan...")
 
     with sync_playwright() as p:
-        # Launch invisible Chrome
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
 
         for row in rows:
-            agency = row.get("Agency", row.get("Title", row.get("Name", "Agency")))
-            url = row.get("URL", row.get("Link", row.get("Website", "")))
+            agency = row.get("Agency", row.get("Title", row.get("Name", "Agency/Organization")))
+            raw_url = extract_url(row)
             
-            if not url or not url.startswith("http"):
+            if not raw_url:
+                skipped_count += 1
                 continue
+
+            # Force valid HTTP formatting
+            if not raw_url.startswith("http"):
+                raw_url = "https://" + raw_url
+            
+            scanned_count += 1
 
             try:
                 page = context.new_page()
-                # Load the page and wait 3 seconds to ensure NEOGOV JS loads the jobs
-                page.goto(url.strip(), wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(3000) 
+                # Load the page and wait for JS
+                page.goto(raw_url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(3500) # Give NEOGOV 3.5 seconds to render the jobs table
                 
                 text = page.inner_text("body").lower()
                 page.close()
@@ -80,21 +105,30 @@ def main():
                 found_matches = [kw.upper() for kw in INCLUDE_KEYWORDS if kw in text]
                 
                 if found_matches:
-                    print(f"[MATCH] {agency}: {found_matches}")
-                    results.append(f"<li><b>{agency}</b>: Found ({', '.join(found_matches)}) — <a href='{url}'>{url}</a></li>")
+                    print(f"[{scanned_count}] MATCH at {agency}: {found_matches}")
+                    results.append(f"<li><b>{agency}</b>: Found ({', '.join(found_matches)}) — <a href='{raw_url}'>{raw_url}</a></li>")
                 else:
-                    print(f"[NO MATCH] {agency}")
+                    print(f"[{scanned_count}] CLEAR (No Match): {agency}")
 
             except Exception as e:
-                print(f"[TIMEOUT/ERROR] {agency} - {url}")
+                print(f"[{scanned_count}] TIMEOUT/ERROR at {agency} - {raw_url}")
+                try:
+                    page.close()
+                except:
+                    pass
 
         browser.close()
 
+    print(f"--- SCAN COMPLETE ---")
+    print(f"Total Rows in CSV: {len(rows)}")
+    print(f"Successfully processed: {scanned_count}")
+    print(f"Skipped (No valid URL): {skipped_count}")
+
     if results:
-        email_body = f"<h2>Daily Job Hits</h2><ul>{''.join(results)}</ul>"
+        email_body = f"<h2>Daily Job Hits (Scanned {scanned_count} sites)</h2><ul>{''.join(results)}</ul>"
         send_email("Daily Job Scan Matches Found", email_body)
     else:
-        send_email("Scan complete. No matches found today.","Scan complete. No matches found today.")
+        print("No matches found today.")
 
 if __name__ == "__main__":
     main()
