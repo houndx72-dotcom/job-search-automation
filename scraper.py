@@ -6,7 +6,7 @@ from playwright.sync_api import sync_playwright
 
 CSV_FILE = "jobs.csv"
 # Removed EXCLUDE terms entirely to prevent throwing away multi-job agency pages
-INCLUDE_KEYWORDS = ["director", "manager", "public information", "pio", "chief", "lead", "officer"]
+INCLUDE_KEYWORDS = ["director", "manager", "information", "pio", "chief", "lead", "officer", "communication"]
 
 def send_email(subject, body):
     sender_email = os.environ.get("SENDER_EMAIL")
