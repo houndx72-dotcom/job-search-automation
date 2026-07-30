@@ -90,11 +90,13 @@ def main():
         if matches:
             results.append(f"<li><b>{agency}</b>: Found keywords ({', '.join(matches)}) — <a href='{url}'>{url}</a></li>")
 
+    # Force a test email dispatch
     if results:
         email_body = f"<h2>Daily Executive Job Search Hits</h2><ul>{''.join(results)}</ul>"
-        send_email("Daily Job Scan Matches Found", email_body)
     else:
-        print("Scan complete. No new high-priority matches found today.")
+        email_body = "<h2>Test Run Successful</h2><p>Your GitHub Action scraper is connected and email alerts are working properly!</p>"
+    
+    send_email("Job Search Scraper Test Email", email_body)
 
 if __name__ == "__main__":
     main()
