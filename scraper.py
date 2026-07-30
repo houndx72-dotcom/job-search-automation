@@ -2,42 +2,11 @@ import csv
 import os
 import smtplib
 from email.mime.text import MIMEText
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 CSV_FILE = "jobs.csv"
-INCLUDE_KEYWORDS = ["director", "manager", "public information", "pio", "chief", "lead"]
-# Only exclude if these words appear in the TITLE itself, not in the body text
-EXCLUDE_TITLE_KEYWORDS = ["assistant director", "deputy", "intern", "technician"]
-
-def check_url(url):
-    try:
-        # Standard headers + NEOGOV JSON/HTML acceptance
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200:
-            return []
-        
-        soup = BeautifulSoup(response.text, "html.parser")
-        
-        # Check page title and main headings specifically
-        page_title = soup.title.string.lower() if soup.title else ""
-        text = soup.get_text().lower()
-        
-        found_matches = []
-        for kw in INCLUDE_KEYWORDS:
-            if kw in text or kw in page_title:
-                # Ensure the title itself isn't an assistant/intern role
-                if not any(ex in page_title for ex in EXCLUDE_TITLE_KEYWORDS):
-                    found_matches.append(kw.upper())
-        
-        return list(set(found_matches))
-    except Exception as e:
-        print(f"Error checking {url}: {e}")
-        return []
+# Removed EXCLUDE terms entirely to prevent throwing away multi-job agency pages
+INCLUDE_KEYWORDS = ["director", "manager", "public information", "pio", "chief", "lead", "officer"]
 
 def send_email(subject, body):
     sender_email = os.environ.get("SENDER_EMAIL")
@@ -76,23 +45,50 @@ def main():
         print(f"{CSV_FILE} not found.")
         return
 
-    print("Starting scan...")
     rows = read_csv_file(CSV_FILE)
+    if not rows:
+        print("CSV file is empty or could not be parsed.")
+        return
+
     results = []
-    
-    for row in rows:
-        agency = row.get("Agency", row.get("Title", row.get("Name", "Agency")))
-        url = row.get("URL", row.get("Link", row.get("Website", "")))
-        
-        if not url or not url.startswith("http"):
-            continue
-        
-        matches = check_url(url.strip())
-        if matches:
-            print(f"[MATCH] {agency}: {matches}")
-            results.append(f"<li><b>{agency}</b>: Found ({', '.join(matches)}) — <a href='{url}'>{url}</a></li>")
-        else:
-            print(f"[NO MATCH] {agency}")
+    print(f"Starting headless Chrome scan of {len(rows)} targets...")
+
+    with sync_playwright() as p:
+        # Launch invisible Chrome
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+
+        for row in rows:
+            agency = row.get("Agency", row.get("Title", row.get("Name", "Agency")))
+            url = row.get("URL", row.get("Link", row.get("Website", "")))
+            
+            if not url or not url.startswith("http"):
+                continue
+
+            try:
+                page = context.new_page()
+                # Load the page and wait 3 seconds to ensure NEOGOV JS loads the jobs
+                page.goto(url.strip(), wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(3000) 
+                
+                text = page.inner_text("body").lower()
+                page.close()
+
+                # Search for target keywords
+                found_matches = [kw.upper() for kw in INCLUDE_KEYWORDS if kw in text]
+                
+                if found_matches:
+                    print(f"[MATCH] {agency}: {found_matches}")
+                    results.append(f"<li><b>{agency}</b>: Found ({', '.join(found_matches)}) — <a href='{url}'>{url}</a></li>")
+                else:
+                    print(f"[NO MATCH] {agency}")
+
+            except Exception as e:
+                print(f"[TIMEOUT/ERROR] {agency} - {url}")
+
+        browser.close()
 
     if results:
         email_body = f"<h2>Daily Job Hits</h2><ul>{''.join(results)}</ul>"
