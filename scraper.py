@@ -5,7 +5,7 @@ from email.mime.text import MIMEText
 from playwright.sync_api import sync_playwright
 
 CSV_FILE = "jobs.csv"
-INCLUDE_KEYWORDS = ["director", "manager", "pio", "public information", "chief", "communications", "relations"]
+INCLUDE_KEYWORDS = ["director", "manager", "pio", "information", "chief", "communications", "relations"]
 
 def send_email(subject, body):
     sender_email = os.environ.get("SENDER_EMAIL")
