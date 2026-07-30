@@ -21,7 +21,6 @@ def check_url(url):
         soup = BeautifulSoup(response.text, "html.parser")
         text = soup.get_text().lower()
         
-        # Simple keyword presence check
         found_matches = []
         for kw in INCLUDE_KEYWORDS:
             if kw in text and not any(ex in text for ex in EXCLUDE_KEYWORDS):
@@ -54,26 +53,42 @@ def send_email(subject, body):
     except Exception as e:
         print(f"Error sending email: {e}")
 
+def read_csv_file(filepath):
+    """Reads CSV file trying UTF-8 first, falling back to Latin-1/CP1252 if needed."""
+    encodings = ["utf-8-sig", "utf-8", "latin-1", "cp1252"]
+    for enc in encodings:
+        try:
+            with open(filepath, mode="r", encoding=enc, errors="replace") as f:
+                reader = list(csv.DictReader(f))
+                return reader
+        except Exception:
+            continue
+    return []
+
 def main():
     if not os.path.exists(CSV_FILE):
         print(f"File {CSV_FILE} not found!")
         return
 
     print("Starting scan across target career pages...")
+    rows = read_csv_file(CSV_FILE)
+    
+    if not rows:
+        print("CSV file is empty or could not be parsed.")
+        return
+
     results = []
     
-    with open(CSV_FILE, mode="r", encoding="utf-8") as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            agency = row.get("Agency", row.get("Title", "Unknown Agency"))
-            url = row.get("URL", row.get("Link", ""))
-            
-            if not url:
-                continue
-            
-            matches = check_url(url)
-            if matches:
-                results.append(f"<li><b>{agency}</b>: Found keywords ({', '.join(matches)}) — <a href='{url}'>{url}</a></li>")
+    for row in rows:
+        agency = row.get("Agency", row.get("Title", row.get("Name", "Unknown Agency")))
+        url = row.get("URL", row.get("Link", row.get("Website", "")))
+        
+        if not url or not url.startswith("http"):
+            continue
+        
+        matches = check_url(url.strip())
+        if matches:
+            results.append(f"<li><b>{agency}</b>: Found keywords ({', '.join(matches)}) — <a href='{url}'>{url}</a></li>")
 
     if results:
         email_body = f"<h2>Daily Executive Job Search Hits</h2><ul>{''.join(results)}</ul>"
