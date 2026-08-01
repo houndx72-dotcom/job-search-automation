@@ -1,11 +1,15 @@
 import csv
 import os
 import smtplib
+import time
 from email.mime.text import MIMEText
 from playwright.sync_api import sync_playwright
 
 CSV_FILE = "jobs.csv"
 INCLUDE_KEYWORDS = ["director", "manager", "pio", "information", "chief", "communications", "relations"]
+
+# Safety Kill Switch: Prevent the script from running infinitely (e.g., max 45 minutes)
+MAX_RUNTIME_SECONDS = 45 * 60 
 
 def send_email(subject, body):
     sender_email = os.environ.get("SENDER_EMAIL")
@@ -64,6 +68,7 @@ def main():
 
     results = []
     scanned_count = 0
+    start_time = time.time()
 
     print(f"Loaded {len(rows)} rows. Scanning for specific job titles...")
 
@@ -73,7 +78,22 @@ def main():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
 
+        # SPEED FIX 1: Block heavy resources (images, media, fonts, CSS)
+        # This prevents government pages from hanging while trying to load a massive town seal or video
+        def block_bloat(route):
+            if route.request.resource_type in ["image", "media", "font", "stylesheet"]:
+                route.abort()
+            else:
+                route.continue_()
+                
+        context.route("**/*", block_bloat)
+
         for row in rows:
+            # SPEED FIX 2: Global timeout check
+            if time.time() - start_time > MAX_RUNTIME_SECONDS:
+                print("⚠️ MAXIMUM RUNTIME REACHED (45 Mins). Halting loop to prevent infinite hang.")
+                break
+
             agency = row.get("Agency", row.get("Title", row.get("Name", "Agency/Organization")))
             raw_url = extract_url(row)
             
@@ -87,17 +107,27 @@ def main():
 
             try:
                 page = context.new_page()
-                page.goto(raw_url, wait_until="domcontentloaded", timeout=25000)
-                page.wait_for_timeout(3500)
                 
-                # Target elements where job titles actually live (headers, table rows, links)
-                elements = page.locator("h1, h2, h3, a, td, th").all_inner_texts()
+                # SPEED FIX 3: Auto-dismiss popups/alerts that freeze Playwright
+                page.on("dialog", lambda dialog: dialog.dismiss())
                 
-                # Find specific lines containing our keywords
+                # Reduced timeout to 15 seconds. If a municipal site takes longer, skip it.
+                page.goto(raw_url, wait_until="domcontentloaded", timeout=15000)
+                
+                # SPEED FIX 4: Soft-wait instead of forced 3.5s sleep. Let it process immediately if loaded.
+                try:
+                    page.wait_for_load_state("networkidle", timeout=3000)
+                except Exception:
+                    pass # Ignore if network isn't perfectly idle, just grab what we have
+                
+                # SPEED FIX 5: Bulk grab all text instantly using JavaScript instead of querying thousands of DOM elements
+                body_text = page.evaluate("document.body ? document.body.innerText : ''")
+                
                 matched_titles = []
-                for el in elements:
-                    clean_el = el.strip()
-                    if len(clean_el) > 5 and len(clean_el) < 100: # Filter out page noise/nav links
+                # Process the lines purely in fast Python memory
+                for line in body_text.split('\n'):
+                    clean_el = line.strip()
+                    if 5 < len(clean_el) < 100: # Filter out single characters or huge paragraphs
                         lower_el = clean_el.lower()
                         if any(kw in lower_el for kw in INCLUDE_KEYWORDS):
                             if clean_el not in matched_titles:
@@ -113,7 +143,7 @@ def main():
                     print(f"[{scanned_count}] CLEAR: {agency}")
 
             except Exception as e:
-                print(f"[{scanned_count}] TIMEOUT at {agency}")
+                print(f"[{scanned_count}] TIMED OUT / SKIPPED at {agency}")
                 try:
                     page.close()
                 except:
@@ -126,6 +156,8 @@ def main():
         send_email("Executive Job Scan Matches Found", email_body)
     else:
         print("Scan complete. No title matches found.")
+        # Optional: Send a "Nothing found" email just so you know it ran
+        send_email("Executive Job Scan - No Matches Today", f"<p>Scan complete across {scanned_count} municipal boards. No executive titles found.</p>")
 
 if __name__ == "__main__":
     main()
