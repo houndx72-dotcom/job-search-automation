@@ -6,7 +6,7 @@ from email.mime.text import MIMEText
 from playwright.sync_api import sync_playwright
 
 CSV_FILE = "jobs.csv"
-INCLUDE_KEYWORDS = ["director", "manager", "pio", "information", "chief", "communications", "relations"]
+INCLUDE_KEYWORDS = ["director", "manager", "pio", "information", "chief", "communications", "relations", "affairs"]
 
 # Safety Kill Switch: Prevent the script from running infinitely (e.g., max 45 minutes)
 MAX_RUNTIME_SECONDS = 45 * 60 
